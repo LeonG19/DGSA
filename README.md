@@ -1,7 +1,4 @@
-# DenseGAAL: Density-Aware Generative Augmentation for Active Learning
-
-A research framework that improves active learning under low-label regimes by adaptively augmenting rare classes via density-guided generative modeling.
-
+# DGSA: Density-Guided Generative Augmentation for Active Learning in Cybersecurity
 ---
 
 ## About the Project
@@ -84,7 +81,7 @@ Produces: `data/adult/train.npz`, `val.npz`, `test.npz`, and `label2id.json`.
 Run:
 ```bash
 python -m main \
-  --al_method <base|DA|DA+DGSA> \
+  --al_method <base|DA|DGSA> \
   --al_function <random|entropy|lc|margin|coreset|galaxy|bald|powermargin|clue|diana|eada|upper|lower|density> \
   --classifier <MLP|RF|XGBC> \
   --dataset adult \
