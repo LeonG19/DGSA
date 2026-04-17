@@ -126,7 +126,7 @@ python -m main --al_method DA --al_function random --generator CTGAN --classifie
 
 **Full DGSA pipeline:**
 ```bash
-python -m main --al_method DA+DGSA --al_function random --generator CTGAN --classifier XGBC --dataset adult --budget 5 --filter_synthetic --alpha 1 --steepness 50
+python -m main --al_method DGSA --al_function random --generator CTGAN --classifier XGBC --dataset adult --budget 5 --filter_synthetic --alpha 1 --steepness 50
 ```
 
 ---
