@@ -10,7 +10,7 @@
 - Retrieves **local neighborhoods** from the unlabeled pool around each anchor to estimate local support and identify regions where additional augmentation is most needed.
 - Allocates augmentation **jointly by class imbalance and local density**: minority classes receive larger augmentation budgets, while anchors in sparse or isolated regions receive fewer generated samples to avoid unrealistic interpolation.
 - Trains **local class-conditional generators** (TVAE, CTGAN, or RTF) on each anchor neighborhood and samples synthetic examples proportional to the anchor's support score.
-- Filters synthetic samples with the classifier to avoid oversampling dominant classes.
+
 
 This closed-loop, density-aware process adaptively shifts support toward underrepresented regions as the labeled pool evolves—leading to consistent gains in macro-F1 for minority classes without degrading majority-class performance. DGSA is agnostic to the underlying acquisition strategy and classifier architecture, and has been validated across Margin, PowerMargin, Entropy, Density, CLUE, and GALAXY query strategies with Random Forest, XGBoost, MLP, and TabM classifiers.
 
