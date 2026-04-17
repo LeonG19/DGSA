@@ -211,7 +211,7 @@ python -m main --al_method DA --al_function random --generator CTGAN --classifie
 
 **Full ALFA pipeline:**
 ```bash
-python -m main --al_method DA+ALFA --al_function random --generator CTGAN --classifier XGBC --dataset adult --budget 5 --filter_synthetic --alpha 1 --steepness 50
+python -m main --al_method DGSA --al_function random --generator CTGAN --classifier XGBC --dataset adult --budget 5 --filter_synthetic --alpha 1 --steepness 50
 ```
 
 ---
@@ -234,6 +234,6 @@ source_code/
 
 ## Results & Benchmarks
 
-Place outputs under `results/`. ALFA consistently outperforms standard methods, especially in class‑imbalanced and distribution‑shifted scenarios.
+Place outputs under `results/`. DGSA consistently outperforms standard methods, especially in class‑imbalanced and distribution‑shifted scenarios.
 
 ---
