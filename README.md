@@ -108,6 +108,7 @@ python -m main \
 | `--num_synthetic`     | Synthetic sample multiplier                      |
 | `--filter_synthetic`  | Only include filtered synthetic data             |
 | `--alpha`, `--steepness` | Generation hyperparameters                   |
+| `--decay_power`       | Controls generation for all classes, (higher decay focuses generation on minority classes) |        
 
 ❗ Note: `galaxy` and `clue` AL methods work **only** with the **MLP classifier**.
 
