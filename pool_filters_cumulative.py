@@ -60,7 +60,7 @@ class anchoral:
       2) Retrieve KNN of anchors from unlabeled set
       3) Average duplicate scores, return top-M indices into X_u
     """
-    def __init__(self, A=10, K=50, M=1000, rep="scaled", pca_dim=64, metric="cosine", random_state=42):
+    def __init__(self, A=10, K=50, M=2700, rep="scaled", pca_dim=64, metric="cosine", random_state=42):
         self.A, self.K, self.M = A, K, M
         self.rep, self.pca_dim, self.metric = rep, pca_dim, metric
         self.rng = np.random.RandomState(random_state)
@@ -130,14 +130,14 @@ class anchoral:
 # ------------------ RandSub ------------------
 class RandSub:
     """Random subset of X_u of size up to M. Ignores labeled data."""
-    def __init__(self, M=1000, random_state=42):
+    def __init__(self, M=2700, random_state=987):
         self.M = M
         self.rng = np.random.RandomState(random_state)
 
     def subset(self, X_l: np.ndarray, y_l: np.ndarray, X_u: np.ndarray) -> np.ndarray:
         X_u = _to_np(X_u)
         m = min(self.M, len(X_u))
-        return self.rng.choice(np.arange(len(X_u)), size=m, replace=False)
+        return self.rng.choice(np.arange(len(X_u)), size=m, replace=True)
 
 
 # ------------------ SEALS (cumulative-capable) ------------------
