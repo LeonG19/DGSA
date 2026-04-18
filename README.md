@@ -132,6 +132,7 @@ python -m main --al_method DenseGAAL --al_function random --generator CTGAN --cl
 ---
 
 ## Project Structure
+```
 source_code/
 ├── active_learning_functions/
 ├── classifiers/
@@ -141,6 +142,7 @@ source_code/
 ├── raw_data/
 ├── data/
 └── results/
+```
 
 
 ---
