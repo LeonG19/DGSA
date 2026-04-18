@@ -1,9 +1,9 @@
-# DGSA: Density-Guided Generative Augmentation for Active Learning in Cybersecurity
+# DenseGAAL: Density-Guided Generative Augmentation for Active Learning in Cybersecurity
 ---
 
 ## About the Project
 
-**DGSA** (Density-Guided Synthetic Augmentation) is a post-query augmentation framework that operates within a standard pool-based active learning loop. After each acquisition round, DGSA:
+**DenseGAAL** (Density-Guided Synthetic Augmentation) is a post-query augmentation framework that operates within a standard pool-based active learning loop. After each acquisition round, DenseGAAL:
 
 - Projects the current labeled and unlabeled pools into a representation space induced by the classifier.
 - Selects class-dependent **anchor points** from the labeled pool using a diversity-aware selection procedure that spreads anchors across distinct local regions within each class.
@@ -12,15 +12,15 @@
 - Trains **local class-conditional generators** (TVAE, CTGAN, or RTF) on each anchor neighborhood and samples synthetic examples proportional to the anchor's support score.
 
 
-This closed-loop, density-aware process adaptively shifts support toward underrepresented regions as the labeled pool evolves—leading to consistent gains in macro-F1 for minority classes without degrading majority-class performance. DGSA is agnostic to the underlying acquisition strategy and classifier architecture, and has been validated across Margin, PowerMargin, Entropy, Density, CLUE, and GALAXY query strategies with Random Forest, XGBoost, MLP, and TabM classifiers.
+This closed-loop, density-aware process adaptively shifts support toward underrepresented regions as the labeled pool evolves—leading to consistent gains in macro-F1 for minority classes without degrading majority-class performance. DenseGAAL is agnostic to the underlying acquisition strategy and classifier architecture, and has been validated across Margin, PowerMargin, Entropy, Density, CLUE, and GALAXY query strategies with Random Forest, XGBoost, MLP, and TabM classifiers.
 
-On cybersecurity datasets (CIC-IDS-2017, CIC-IDS-2018, BODMAS, APIGRAPH, ANDMAL) and non-cybersecurity tabular benchmarks (Shuttle, Cover, Satellite), DGSA consistently outperforms standard active learning and uniform generative augmentation baselines, achieving **3–7 average F1-point gains** over BaseAL and **4–10 points** over uniform generators at a 1% labeling budget.
+On cybersecurity datasets (CIC-IDS-2017, CIC-IDS-2018, BODMAS, APIGRAPH, ANDMAL) and non-cybersecurity tabular benchmarks (Shuttle, Cover, Satellite), DenseGAAL consistently outperforms standard active learning and uniform generative augmentation baselines, achieving **3–7 average F1-point gains** over BaseAL and **4–10 points** over uniform generators at a 1% labeling budget.
 
 ---
 
 ## Motivation
 
-When annotation budgets are tight, active learning often misses rare classes, leading to poor generalization. Existing class-conditional augmentation methods assume enough labeled examples per class to reliably estimate the class distribution—an assumption that routinely fails for minority classes under limited budgets. DGSA addresses this gap by estimating local structure around individual anchor points and selectively expanding underrepresented regions in the feature space using density-guided generative sampling.
+When annotation budgets are tight, active learning often misses rare classes, leading to poor generalization. Existing class-conditional augmentation methods assume enough labeled examples per class to reliably estimate the class distribution—an assumption that routinely fails for minority classes under limited budgets. DenseGAAL addresses this gap by estimating local structure around individual anchor points and selectively expanding underrepresented regions in the feature space using density-guided generative sampling.
 
 ---
 
@@ -38,17 +38,17 @@ When annotation budgets are tight, active learning often misses rare classes, le
 
 - Python 3.x
 - Install dependencies:
-  ```bash
+```bash
   pip install -r requirements.txt
-  ```
+```
 
 ### Setup
 
 1. Clone this repo:
-   ```bash
+```bash
    git clone <your-repo-url>
    cd <repo-name>
-   ```
+```
 2. Place your input CSV in `source_code/raw_data/`.
 3. Edit `source_code/config.py` to define:
    - `LABEL_NAME`, `FEATURE_NAMES`, `DISCRETE_FEATURES`
@@ -81,7 +81,7 @@ Produces: `data/adult/train.npz`, `val.npz`, `test.npz`, and `label2id.json`.
 Run:
 ```bash
 python -m main \
-  --al_method <base|DA|DGSA> \
+  --al_method <base|DA|DenseGAAL> \
   --al_function <random|entropy|lc|margin|coreset|galaxy|bald|powermargin|clue|diana|eada|upper|lower|density> \
   --classifier <MLP|RF|XGBC> \
   --dataset adult \
@@ -124,16 +124,14 @@ python -m main --al_method base --al_function random --classifier MLP --dataset 
 python -m main --al_method DA --al_function random --generator CTGAN --classifier XGBC --dataset adult --budget 5
 ```
 
-**Full DGSA pipeline:**
+**Full DenseGAAL pipeline:**
 ```bash
-python -m main --al_method DGSA --al_function random --generator CTGAN --classifier XGBC --dataset adult --budget 5 --filter_synthetic --alpha 1 --steepness 50
+python -m main --al_method DenseGAAL --al_function random --generator CTGAN --classifier XGBC --dataset adult --budget 5 --filter_synthetic --alpha 1 --steepness 50
 ```
 
 ---
 
 ## Project Structure
-
-```
 source_code/
 ├── active_learning_functions/
 ├── classifiers/
@@ -143,11 +141,10 @@ source_code/
 ├── raw_data/
 ├── data/
 └── results/
-```
+
 
 ---
 
 ## Results & Benchmarks
 
-Place outputs under `results/`. DGSA consistently outperforms standard methods, especially in class-imbalanced and distribution-shifted scenarios.
-
+Place outputs under `results/`. DenseGAAL consistently outperforms standard methods, especially in class-imbalanced and distribution-shifted scenarios.
