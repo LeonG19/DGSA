@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Unified Active Learning runner with pluggable generators:
-- Active Learning methods (`--al_method`): base, DA, DGSA
+- Active Learning methods (`--al_method`): base, DA, DenseGAAL
 - Active Learning functions (`--al_function`): specific query functions (e.g. margin, powermargin)
 - Generators (`--generator`): TVAE, CTGAN, RTF
 - Classifiers (`--classifier`): MLP, RF, XGBC
@@ -11,16 +11,16 @@ and saves classification reports and detailed metrics (accuracy, precision, reca
 Supports custom anchor fraction via `--anchor_alpha` and `--anchor_steepness`.
 
 FLAGS:
-- --neighbor_only: in DGSA, add kNN neighbors directly (no generator / no synthetic data)
+- --neighbor_only: in DenseGAAL, add kNN neighbors directly (no generator / no synthetic data)
 - --filter_bad_neighbors: remove incorrectly-labeled neighbors (uses pool ground-truth labels y_p)
-- --no_local_support: in DGSA, SKIP kNN neighbors; train generator using anchors only
-- --gen_train_all_labeled: in DGSA, train generator on (all labeled so far) + (retrieved neighbors)
-  instead of only (anchors + neighbors). Works in minority and base DGSA.
+- --no_local_support: in DenseGAAL, SKIP kNN neighbors; train generator using anchors only
+- --gen_train_all_labeled: in DenseGAAL, train generator on (all labeled so far) + (retrieved neighbors)
+  instead of only (anchors + neighbors). Works in minority and base DenseGAAL.
 
 FLAGS for iteration control:
  - --al_steps: number of active learning loops to run before augmentation (default: 1, uses full budget per step).
- - --dgsa_steps: number of DGSA iterations to run (default: 1). Each iteration runs 1 AL step + DGSA.
- - --dgsa_steps_mode: when --dgsa_steps>1, choose whether to run DGSA after EACH AL step
+ - --densegaal_steps: number of DenseGAAL iterations to run (default: 1). Each iteration runs 1 AL step + DenseGAAL.
+ - --densegaal_steps_mode: when --densegaal_steps>1, choose whether to run DenseGAAL after EACH AL step
    (per_step, default) or to run ALL AL steps first and generate ONCE (per_al_steps).
 
 UPDATED FLAG BEHAVIOR:
@@ -68,7 +68,7 @@ import torch.nn.functional as F
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Unified AL runner")
-    parser.add_argument('--al_method', choices=['base','DA','DGSA'], required=True)
+    parser.add_argument('--al_method', choices=['base','DA','DenseGAAL'], required=True)
     parser.add_argument('--pooling_method', choices=['anchoral', 'randsub', 'seals'], required=False, default=False)
     parser.add_argument('--al_function', choices=list(METHOD_DICT.keys()), required=True)
     parser.add_argument('--generator', choices=['TVAE','CTGAN','RTF'])
@@ -79,11 +79,11 @@ def parse_args():
     parser.add_argument('--al_steps', type=int, default=1,
                         help="Number of active learning loops to run before augmentation (default: 1). "
                              "Each step uses the full --budget.")
-    parser.add_argument('--dgsa_steps', type=int, default=1,
-                        help="Number of DGSA iterations to run (default: 1). "
-                             "Each iteration runs 1 AL step + DGSA.")
-    parser.add_argument('--dgsa_steps_mode', choices=['per_step', 'per_al_steps'], default='per_step',
-                        help="When --dgsa_steps>1: run DGSA after EACH AL step (per_step, default) "
+    parser.add_argument('--densegaal_steps', type=int, default=1,
+                        help="Number of DenseGAAL iterations to run (default: 1). "
+                             "Each iteration runs 1 AL step + DenseGAAL.")
+    parser.add_argument('--densegaal_steps_mode', choices=['per_step', 'per_al_steps'], default='per_step',
+                        help="When --densegaal_steps>1: run DenseGAAL after EACH AL step (per_step, default) "
                              "or run ALL AL steps first and generate ONCE (per_al_steps).")
     parser.add_argument('--num_synthetic', nargs='+', type=str, default=['1'])
     parser.add_argument('--decay_power', type=float, default=0.0)
@@ -94,7 +94,7 @@ def parse_args():
     parser.add_argument('--neighbor_only', action='store_true')
     parser.add_argument('--filter_bad_neighbors', action='store_true')
     parser.add_argument('--no_local_support', action='store_true',
-                        help="DGSA mode: skip kNN neighbors; train generator using anchors only.")
+                        help="DenseGAAL mode: skip kNN neighbors; train generator using anchors only.")
     parser.add_argument('--gen_train_all_labeled', action='store_true',
                         help="Train generator on (all labeled so far) + (retrieved neighbors) "
                              "instead of (anchors + neighbors).")
@@ -112,13 +112,13 @@ def parse_args():
                     help="PCA dimension when --rep pca.")
 
     parser.add_argument('--anchoral_A', type=int, default=10,
-                    help="Number of anchors per class (A) for dgsa_anchoral mode (kmeans++ seeds).")
+                    help="Number of anchors per class (A) for densegaal_anchoral mode (kmeans++ seeds).")
     parser.add_argument('--anchoral_K', type=int, default=1,
-                    help="K neighbors to retrieve per anchor (K) for dgsa_anchoral mode.")
+                    help="K neighbors to retrieve per anchor (K) for densegaal_anchoral mode.")
     parser.add_argument('--anchoral_M', type=int, default=2600,
                     help="Top-M unlabeled points to keep after ranking (AnchorAL subpool size).")
     parser.add_argument('--alfa_k', type=int, default=1,
-                    help="K neighbors to retrieve per anchor for ORIGINAL DGSA (non-anchoral modes).")
+                    help="K neighbors to retrieve per anchor for ORIGINAL DenseGAAL (non-anchoral modes).")
 
     parser.add_argument('--anchoral_anchor_total', type=int, default=None,
                 help="Total number of anchors when --anchoral_anchor_policy inverse_rank. "
@@ -193,15 +193,15 @@ def ensure_results_dir(args):
     all_anchors = ''
     no_local = "nolocalsupport" if getattr(args, 'no_local_support', False) else ''
     rep_tag = f"rep-{args.rep}_{args.metric}" if hasattr(args, 'rep') else ''
-    anch_hybrid = "anchoral_dgsa" if getattr(args, 'dgsa_anchoral', False) else ''
+    anch_hybrid = "anchoral_densegaal" if getattr(args, 'densegaal_anchoral', False) else ''
     if getattr(args, 'no_local_support', False):
         neighbors_k = 0
     else:
-        neighbors_k = args.anchoral_K if getattr(args, 'dgsa_anchoral', False) else args.alfa_k
+        neighbors_k = args.anchoral_K if getattr(args, 'densegaal_anchoral', False) else args.alfa_k
     neighbors_tag = f"neighborsK{neighbors_k}"
     al_steps_tag = f"alsteps{args.al_steps}" if getattr(args, 'al_steps', 1) != 0 else ''
-    dgsa_steps_tag = f"dgsasteps{args.dgsa_steps}" if getattr(args, 'dgsa_steps', 1) != 0 else ''
-    dgsa_steps_mode_tag = f"dgsamode{args.dgsa_steps_mode}" if getattr(args, 'dgsa_steps_mode', 'per_step') != 'per_step' else ''
+    densegaal_steps_tag = f"densegaalsteps{args.densegaal_steps}" if getattr(args, 'densegaal_steps', 1) != 0 else ''
+    densegaal_steps_mode_tag = f"densegaalmode{args.densegaal_steps_mode}" if getattr(args, 'densegaal_steps_mode', 'per_step') != 'per_step' else ''
     worst_tag = ''
     seed_tag = f"seed{args.random_state}"
     budget_tag = f"budget{args.budget}"
@@ -214,7 +214,7 @@ def ensure_results_dir(args):
     path = os.path.join(
         'results', args.dataset, pool, args.al_method, clf, gen,
         budget_tag, decay_power_tag, steepness_tag,
-        minority, all_labeled, all_anchors, no_local, anch_hybrid, rep_tag, neighbors_tag, al_steps_tag, dgsa_steps_tag, dgsa_steps_mode_tag, worst_tag, seed_tag,
+        minority, all_labeled, all_anchors, no_local, anch_hybrid, rep_tag, neighbors_tag, al_steps_tag, densegaal_steps_tag, densegaal_steps_mode_tag, worst_tag, seed_tag,
         f"{args.al_function}_{knn_only}_{knn_filter}"
     )
     os.makedirs(path, exist_ok=True)
@@ -407,9 +407,6 @@ def init_pooling(name, Xl, yl, Xu, yu):
 
 
 
-# ============================================================
-# Representation helpers (raw/scaled/pca) for AnchorAL-style DGSA
-# ============================================================
 
 def _normalize_rows(Z: np.ndarray) -> np.ndarray:
     n = np.linalg.norm(Z, axis=1, keepdims=True) + 1e-12
@@ -471,198 +468,6 @@ class _PCAEncoder(_RepEncoder):
 
 
 
-def _make_encoder(args, cfg) -> _RepEncoder:
-    def __init__(
-        self,
-        cfg,
-        metric: str,
-        random_state: int,
-        epochs: int,
-        batch_size: int,
-        lr: float,
-        weight_decay: float,
-        d_token: int,
-        n_layers: int,
-        n_heads: int,
-        dropout: float,
-    ):
-        self.cfg = cfg
-        self.metric = metric
-        self.random_state = random_state
-        self.epochs = epochs
-        self.batch_size = batch_size
-        self.lr = lr
-        self.weight_decay = weight_decay
-        self.d_token = d_token
-        self.n_layers = n_layers
-        self.n_heads = n_heads
-        self.dropout = dropout
-
-        self.model = None
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-
-        self.cat_idx = None
-        self.num_idx = None
-        self.num_mean = None
-        self.num_std = None
-        self.cat_cardinalities = None
-
-    def _prep_fit(self, X_l: np.ndarray, X_u: np.ndarray):
-        X_all = np.vstack([X_l, X_u])
-        cat_idx, num_idx = _get_cat_num_indices(self.cfg)
-        # If config doesn't define feature names/discretes, treat all numeric
-        if len(getattr(self.cfg.DATASET, "FEATURE_NAMES", [])) == 0:
-            cat_idx = np.array([], dtype=np.int64)
-            num_idx = np.arange(X_all.shape[1], dtype=np.int64)
-
-        self.cat_idx, self.num_idx = cat_idx, num_idx
-
-        # numeric standardization fitted on combined
-        if len(num_idx):
-            Xn = X_all[:, num_idx].astype(np.float32)
-            self.num_mean = Xn.mean(axis=0).astype(np.float32)
-            self.num_std = Xn.std(axis=0).astype(np.float32)
-            self.num_std = np.where(self.num_std < 1e-6, 1.0, self.num_std).astype(np.float32)
-        else:
-            self.num_mean = np.zeros((0,), np.float32)
-            self.num_std = np.ones((0,), np.float32)
-
-        # categorical cardinalities from combined (safer than just labeled)
-        cat_cards = []
-        for j in cat_idx.tolist():
-            col = X_all[:, j]
-            # assume already int-coded
-            nuniq = int(len(np.unique(col)))
-            cat_cards.append(max(2, nuniq + 1))
-        self.cat_cardinalities = cat_cards
-
-    def _split_num_cat(self, X: np.ndarray):
-        X = np.asarray(X)
-        X_num = X[:, self.num_idx].astype(np.float32) if len(self.num_idx) else np.zeros((len(X), 0), np.float32)
-        X_cat = X[:, self.cat_idx].astype(np.int64) if len(self.cat_idx) else np.zeros((len(X), 0), np.int64)
-
-        if X_num.shape[1] > 0:
-            X_num = (X_num - self.num_mean) / (self.num_std + 1e-6)
-
-        # map categorical to [0..card-1]
-        for j, card in enumerate(self.cat_cardinalities):
-            col = X_cat[:, j]
-            col = np.where(col < 0, -col, col)
-            X_cat[:, j] = col % card
-
-        return X_num, X_cat
-
-    def _build_model(self, n_num: int, cat_cards, n_classes: int):
-        if RTDL_FTTransformer is None:
-            raise ImportError(
-                "rtdl_revisiting_models is not installed. "
-                "Install with: pip install rtdl-revisiting-models (or rtdl_revisiting_models depending on pip name)."
-            )
-
-        # Prefer make_default if available (stable across versions)
-        if hasattr(RTDL_FTTransformer, "make_default"):
-            model = RTDL_FTTransformer.make_default(
-                n_num_features=n_num,
-                cat_cardinalities=cat_cards,
-                d_out=n_classes,
-            )
-        else:
-            # Best-effort constructor fallback
-            model = RTDL_FTTransformer(
-                n_num_features=n_num,
-                cat_cardinalities=cat_cards,
-                d_out=n_classes,
-                d_token=self.d_token,
-                n_blocks=self.n_layers,
-                attention_n_heads=self.n_heads,
-                attention_dropout=self.dropout,
-                ffn_dropout=self.dropout,
-                residual_dropout=self.dropout,
-            )
-        return model
-
-    def fit(self, X_l: np.ndarray, y_l: np.ndarray, X_u: np.ndarray, cfg):
-        np.random.seed(self.random_state)
-        torch.manual_seed(self.random_state)
-
-        self._prep_fit(X_l, X_u)
-
-        Xn_l, Xc_l = self._split_num_cat(X_l)
-        y_l = np.asarray(y_l).astype(np.int64)
-
-        n_classes = int(len(np.unique(y_l)))
-        model = self._build_model(n_num=Xn_l.shape[1], cat_cards=self.cat_cardinalities, n_classes=n_classes)
-        model = model.to(self.device)
-
-        # dataloader
-        ds = torch.utils.data.TensorDataset(
-            torch.tensor(Xn_l, dtype=torch.float32),
-            torch.tensor(Xc_l, dtype=torch.long),
-            torch.tensor(y_l, dtype=torch.long),
-        )
-        dl = torch.utils.data.DataLoader(ds, batch_size=self.batch_size, shuffle=True, drop_last=False)
-
-        opt = torch.optim.AdamW(model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
-
-        model.train()
-        for ep in range(1, self.epochs + 1):
-            loss_sum = 0.0
-            for xn, xc, y in dl:
-                xn = xn.to(self.device)
-                xc = xc.to(self.device)
-                y = y.to(self.device)
-
-                logits = model(xn, xc)
-                loss = F.cross_entropy(logits, y)
-
-                opt.zero_grad(set_to_none=True)
-                loss.backward()
-                opt.step()
-                loss_sum += float(loss.detach().cpu())
-            print(f"[ft] ep={ep:03d} loss={loss_sum/max(1,len(dl)):.4f}")
-
-        self.model = model
-        return self
-
-    @torch.no_grad()
-    def transform(self, X: np.ndarray) -> np.ndarray:
-        if self.model is None:
-            raise RuntimeError("FT encoder not fitted.")
-        Xn, Xc = self._split_num_cat(X)
-        dl = torch.utils.data.DataLoader(
-            torch.utils.data.TensorDataset(
-                torch.tensor(Xn, dtype=torch.float32),
-                torch.tensor(Xc, dtype=torch.long),
-            ),
-            batch_size=2048,
-            shuffle=False,
-            drop_last=False,
-        )
-
-        outs = []
-        self.model.eval()
-
-        # Extract CLS embedding if internals exist, else fallback to penultimate hook
-        has_internals = hasattr(self.model, "feature_tokenizer") and hasattr(self.model, "transformer")
-        if has_internals:
-            for (xn, xc) in dl:
-                xn = xn.to(self.device); xc = xc.to(self.device)
-                h = self.model.feature_tokenizer(xn, xc)   # [B, 1+F, d]
-                h = self.model.transformer(h)              # [B, 1+F, d]
-                cls = h[:, 0, :]
-                outs.append(cls.detach().cpu().numpy())
-        else:
-            # Worst-case fallback: use logits as embedding (not ideal, but keeps pipeline running)
-            for (xn, xc) in dl:
-                xn = xn.to(self.device); xc = xc.to(self.device)
-                logits = self.model(xn, xc)
-                outs.append(logits.detach().cpu().numpy())
-
-        Z = np.concatenate(outs, axis=0)
-        if self.metric == "cosine":
-            Z = _normalize_rows(Z)
-        return Z
-
 
 def _make_encoder(args, cfg) -> _RepEncoder:
     if args.rep == "raw":
@@ -689,7 +494,7 @@ def _compute_anchor_counts(
 
     policies:
       - per_class: take A_per_class anchors per class (previous behavior).
-      - dgsa_freq: allocate anchors using the DGSA anchor-fraction function.
+      - densegaal_freq: allocate anchors using the DenseGAAL anchor-fraction function.
           For each class c with labeled count n_c and labeled frequency f_c:
             frac_c = compute_anchor_fraction(f_c, anchor_alpha, anchor_steepness)
           If total_anchors is None/<=0:  A_c = clip(round(frac_c * n_c), 1, n_c)
@@ -711,7 +516,7 @@ def _compute_anchor_counts(
         return {cls: int(A_per_class) for cls in classes}
 
     if policy == "alfa_freq":
-        # Use DGSA anchor fraction to decide anchor budget per class.
+        # Use DenseGAAL anchor fraction to decide anchor budget per class.
         N = int(counts.sum())
         freqs = {cls: (cnt / N) for cls, cnt in zip(classes, counts)}
 
@@ -1311,7 +1116,7 @@ def run_base(args, results_dir):
     )
     clf.fit(Xtr, ytr)
     y_pred = clf.predict(Xt)
-    return y_pred, yt, {"al_pool_f1": step_pool_f1, "al_test_f1": step_test_f1, "dgsa_test_f1": []}
+    return y_pred, yt, {"al_pool_f1": step_pool_f1, "al_test_f1": step_test_f1, "densegaal_test_f1": []}
 
 
 def run_base_pooling(args, results_dir):
@@ -1328,7 +1133,7 @@ def run_base_pooling(args, results_dir):
     )
     clf.fit(Xtr, ytr)
     y_pred = clf.predict(Xt)
-    return y_pred, yt, {"al_pool_f1": step_pool_f1, "al_test_f1": step_test_f1, "dgsa_test_f1": []}
+    return y_pred, yt, {"al_pool_f1": step_pool_f1, "al_test_f1": step_test_f1, "densegaal_test_f1": []}
 
 
 def run_augmented(args, results_dir):
@@ -1360,7 +1165,7 @@ def run_augmented(args, results_dir):
         )
         clf.fit(Xal, yal)
         y_pred = clf.predict(Xt)
-        return y_pred, yt, {"al_pool_f1": step_pool_f1, "al_test_f1": step_test_f1, "dgsa_test_f1": []}
+        return y_pred, yt, {"al_pool_f1": step_pool_f1, "al_test_f1": step_test_f1, "densegaal_test_f1": []}
 
     # Compute per-class synthetic counts (NEW DEFAULT: compute_synthetic_count everywhere)
     k_per_cls = compute_k_per_cls(
@@ -1410,10 +1215,10 @@ def run_augmented(args, results_dir):
     )
     clf.fit(Xf, yf)
     y_pred = clf.predict(Xt)
-    return y_pred, yt, {"al_pool_f1": step_pool_f1, "al_test_f1": step_test_f1, "dgsa_test_f1": []}
+    return y_pred, yt, {"al_pool_f1": step_pool_f1, "al_test_f1": step_test_f1, "densegaal_test_f1": []}
 
 
-def _run_dgsa_with_state(args, cfg, clf, Xal, yal, Xv, yv, Xt, yt, Xv0, yv0, _sel):
+def _run_densegaal_with_state(args, cfg, clf, Xal, yal, Xv, yv, Xt, yt, Xv0, yv0, _sel):
     # Train classifier AFTER AL selections for synthetic filtering.
     print(Xal.shape)
     clf.fit(Xal, yal)
@@ -1432,10 +1237,10 @@ def _run_dgsa_with_state(args, cfg, clf, Xal, yal, Xv, yv, Xt, yt, Xv0, yv0, _se
     worst_class = None
 
     # ------------------------------------------------------------------
-    # ORIGINAL DGSA MODE: anchor selection + kNN
+    # ORIGINAL DenseGAAL MODE: anchor selection + kNN
     # ------------------------------------------------------------------
-    if args.dgsa_anchoral:
-        print("DGSA: dgsa_anchoral mode enabled (kmeans++ anchors + ranked top-M subpool).")
+    if args.densegaal_anchoral:
+        print("DenseGAAL: densegaal_anchoral mode enabled (kmeans++ anchors + ranked top-M subpool).")
         _m_str = 'ALL' if (args.anchoral_M is None or args.anchoral_M <= 0) else str(args.anchoral_M)
         print(f"  rep={args.rep} metric={args.metric} A_per_class={args.anchoral_A} K={args.anchoral_K} M={_m_str}")
 
@@ -1456,7 +1261,7 @@ def _run_dgsa_with_state(args, cfg, clf, Xal, yal, Xv, yv, Xt, yt, Xv0, yv0, _se
         Z_u = enc.transform(X_pool)
 
         if args.no_local_support:
-            print("DGSA: no_local_support enabled (skipping kNN; generator uses anchors only).")
+            print("DenseGAAL: no_local_support enabled (skipping kNN; generator uses anchors only).")
             anchor_pos = _anchoral_select_anchors(
                 Z_l=Z_l,
                 y_l=yal,
@@ -1485,9 +1290,6 @@ def _run_dgsa_with_state(args, cfg, clf, Xal, yal, Xv, yv, Xt, yt, Xv0, yv0, _se
                 random_state=args.random_state,
             )
 
-        # --------------------------------------------------
-        # DEBUG / VISIBILITY: anchors selected (counts + proportions)
-        # --------------------------------------------------
         _anchor_labels = yal[anchor_pos]
         _ctr = Counter(_anchor_labels.tolist())
         _total = len(anchor_pos)
@@ -1499,7 +1301,7 @@ def _run_dgsa_with_state(args, cfg, clf, Xal, yal, Xv, yv, Xt, yt, Xv0, yv0, _se
         # subpool data (pseudo-labeled)
         X_sub = X_pool[idx_u]
         y_sub = y_pseudo
-        print_dist("DGSA-subpool (pseudo-labeled)", y_sub)
+        print_dist("DenseGAAL-subpool (pseudo-labeled)", y_sub)
 
         if args.neighbor_only:
             if args.no_local_support:
@@ -1509,7 +1311,7 @@ def _run_dgsa_with_state(args, cfg, clf, Xal, yal, Xv, yv, Xt, yt, Xv0, yv0, _se
                 clf.fit(Xf, yf)
                 y_pred = clf.predict(Xt)
                 return y_pred, yt, Xf, yf
-            print("DGSA: neighbor-only mode enabled (adding subpool directly; skipping generator).")
+            print("DenseGAAL: neighbor-only mode enabled (adding subpool directly; skipping generator).")
             Xf = np.vstack([Xal, X_sub]) if len(X_sub) else Xal
             yf = np.hstack([yal, y_sub]) if len(y_sub) else yal
             clf.fit(Xf, yf)
@@ -1517,7 +1319,7 @@ def _run_dgsa_with_state(args, cfg, clf, Xal, yal, Xv, yv, Xt, yt, Xv0, yv0, _se
             return y_pred, yt, Xf, yf
 
         # generator training dataset:
-        #   - base: anchors only (as in original DGSA intent)
+        #   - base: anchors only (as in original DenseGAAL intent)
         #   - optional: all labeled so far
         anchors_df = pd.DataFrame(Xal[anchor_pos], columns=fn)
         anchors_df["Label"] = yal[anchor_pos]
@@ -1540,7 +1342,7 @@ def _run_dgsa_with_state(args, cfg, clf, Xal, yal, Xv, yv, Xt, yt, Xv0, yv0, _se
             multipliers=multipliers,
         )
 
-        print("DGSA(dgsa_anchoral) k_per_cls (class -> synthetic count):", k_per_cls)
+        print("DenseGAAL(densegaal_anchoral) k_per_cls (class -> synthetic count):", k_per_cls)
 
         syn = []
         for cls in classes_to_aug:
@@ -1589,7 +1391,7 @@ def _run_dgsa_with_state(args, cfg, clf, Xal, yal, Xv, yv, Xt, yt, Xv0, yv0, _se
         return y_pred, yt, Xf, yf
 
     # ------------------------------------------------------------------
-    # ORIGINAL DGSA MODE: anchor selection + kNN
+    # ORIGINAL DenseGAAL MODE: anchor selection + kNN
     # ------------------------------------------------------------------
     rng = np.random.RandomState(args.random_state)
     Z_l = None
@@ -1611,7 +1413,7 @@ def _run_dgsa_with_state(args, cfg, clf, Xal, yal, Xv, yv, Xt, yt, Xv0, yv0, _se
         # minority uses TWO most underrepresented classes
         sorted_classes_index = np.argsort(freqs)[:2]
         minority_classes = u[sorted_classes_index]
-        print(f"using minority class dgsa composition (2 classes): {minority_classes}")
+        print(f"using minority class densegaal composition (2 classes): {minority_classes}")
 
         for cls in minority_classes:
             cls_idx = np.where(yal == cls)[0]
@@ -1641,7 +1443,7 @@ def _run_dgsa_with_state(args, cfg, clf, Xal, yal, Xv, yv, Xt, yt, Xv0, yv0, _se
     y_pool = yv
     # retrieve neighbors ONCE (used for neighbor-only and generator training)
     if args.no_local_support:
-        print("DGSA: no_local_support enabled (skipping kNN; generator uses anchors only).")
+        print("DenseGAAL: no_local_support enabled (skipping kNN; generator uses anchors only).")
         Xn = np.empty((0, X_pool.shape[1]))
         yn = np.empty((0,), dtype=yal.dtype)
     else:
@@ -1660,7 +1462,7 @@ def _run_dgsa_with_state(args, cfg, clf, Xal, yal, Xv, yv, Xt, yt, Xv0, yv0, _se
             clf.fit(Xf, yf)
             y_pred = clf.predict(Xt)
             return y_pred, yt, Xf, yf
-        print("DGSA: neighbor-only mode enabled (skipping generator + synthetic data).")
+        print("DenseGAAL: neighbor-only mode enabled (skipping generator + synthetic data).")
         Xf = np.vstack([Xal, Xn]) if len(Xn) else Xal
         yf = np.hstack([yal, yn]) if len(yn) else yal
         clf.fit(Xf, yf)
@@ -1691,7 +1493,7 @@ def _run_dgsa_with_state(args, cfg, clf, Xal, yal, Xv, yv, Xt, yt, Xv0, yv0, _se
         multipliers=multipliers,
     )
 
-    print("DGSA k_per_cls (class -> synthetic count):", k_per_cls)
+    print("DenseGAAL k_per_cls (class -> synthetic count):", k_per_cls)
 
     syn = []
 
@@ -1747,7 +1549,7 @@ def _run_dgsa_with_state(args, cfg, clf, Xal, yal, Xv, yv, Xt, yt, Xv0, yv0, _se
     return y_pred, yt, Xf, yf
 
 
-def run_dgsa(args, results_dir):
+def run_densegaal(args, results_dir):
     cfg, clf, Xtr, ytr, Xv, yv, Xt, yt = base_set_up(args)
     Xtr0, ytr0 = Xtr.copy(), ytr.copy()
     Xv0_base, yv0_base = Xv.copy(), yv.copy()
@@ -1758,17 +1560,17 @@ def run_dgsa(args, results_dir):
 
     al_pool_f1 = []
     al_test_f1 = []
-    dgsa_test_f1 = []
+    densegaal_test_f1 = []
 
-    if int(getattr(args, 'dgsa_steps', 1)) > 1:
-        if getattr(args, 'dgsa_steps_mode', 'per_step') == 'per_step':
+    if int(getattr(args, 'densegaal_steps', 1)) > 1:
+        if getattr(args, 'densegaal_steps_mode', 'per_step') == 'per_step':
             if int(getattr(args, 'al_steps', 1)) != 1:
-                print("[WARN] dgsa_steps>1: running exactly 1 AL step per DGSA iteration (ignoring al_steps>1).")
+                print("[WARN] densegaal_steps>1: running exactly 1 AL step per DenseGAAL iteration (ignoring al_steps>1).")
             Xal, yal = Xtr, ytr
             orig_al_steps = args.al_steps
             try:
                 last_Xf, last_yf = None, None
-                for step in range(int(args.dgsa_steps)):
+                for step in range(int(args.densegaal_steps)):
                     Xv0, yv0 = Xv.copy(), yv.copy()
                     args.al_steps = 1
                     Xal, yal, Xv, yv, _sel, step_pool_f1, step_test_f1 = active_learning_loops(
@@ -1776,40 +1578,40 @@ def run_dgsa(args, results_dir):
                     )
                     al_pool_f1.extend(step_pool_f1)
                     al_test_f1.extend(step_test_f1)
-                    y_pred, y_true, last_Xf, last_yf = _run_dgsa_with_state(
+                    y_pred, y_true, last_Xf, last_yf = _run_densegaal_with_state(
                         args, cfg, clf, Xal, yal, Xv, yv, Xt, yt, Xv0, yv0, _sel
                     )
                     f1_macro = f1_score(y_true, y_pred, average='macro', zero_division=0)
-                    dgsa_test_f1.append(float(f1_macro))
+                    densegaal_test_f1.append(float(f1_macro))
             finally:
                 args.al_steps = orig_al_steps
             export_dataset_versions(
                 args, cfg, results_dir, Xtr0, ytr0, Xv0_base, yv0_base, Xt0, yt0, Xal=Xal, yal=yal, Xaug=last_Xf, yaug=last_yf
             )
-            return y_pred, y_true, {"al_pool_f1": al_pool_f1, "al_test_f1": al_test_f1, "dgsa_test_f1": dgsa_test_f1}
+            return y_pred, y_true, {"al_pool_f1": al_pool_f1, "al_test_f1": al_test_f1, "densegaal_test_f1": densegaal_test_f1}
         else:
-            # per_al_steps: run ALL AL steps first (dgsa_steps times), then generate ONCE.
+            # per_al_steps: run ALL AL steps first (densegaal_steps times), then generate ONCE.
             Xal, yal = Xtr, ytr
             orig_al_steps = args.al_steps
             try:
-                args.al_steps = int(args.dgsa_steps)
+                args.al_steps = int(args.densegaal_steps)
                 Xv0, yv0 = Xv.copy(), yv.copy()
                 Xal, yal, Xv, yv, _sel, step_pool_f1, step_test_f1 = active_learning_loops(
                     args, Xal, yal, Xv, yv, clf, Xt, yt
                 )
                 al_pool_f1.extend(step_pool_f1)
                 al_test_f1.extend(step_test_f1)
-                y_pred, y_true, last_Xf, last_yf = _run_dgsa_with_state(
+                y_pred, y_true, last_Xf, last_yf = _run_densegaal_with_state(
                     args, cfg, clf, Xal, yal, Xv, yv, Xt, yt, Xv0, yv0, _sel
                 )
                 f1_macro = f1_score(y_true, y_pred, average='macro', zero_division=0)
-                dgsa_test_f1.append(float(f1_macro))
+                densegaal_test_f1.append(float(f1_macro))
             finally:
                 args.al_steps = orig_al_steps
             export_dataset_versions(
                 args, cfg, results_dir, Xtr0, ytr0, Xv0_base, yv0_base, Xt0, yt0, Xal=Xal, yal=yal, Xaug=last_Xf, yaug=last_yf
             )
-            return y_pred, y_true, {"al_pool_f1": al_pool_f1, "al_test_f1": al_test_f1, "dgsa_test_f1": dgsa_test_f1}
+            return y_pred, y_true, {"al_pool_f1": al_pool_f1, "al_test_f1": al_test_f1, "densegaal_test_f1": densegaal_test_f1}
 
     # Single-iteration (default) behavior
     Xv0, yv0 = Xv.copy(), yv.copy()
@@ -1818,15 +1620,15 @@ def run_dgsa(args, results_dir):
     )
     al_pool_f1.extend(step_pool_f1)
     al_test_f1.extend(step_test_f1)
-    y_pred, y_true, last_Xf, last_yf = _run_dgsa_with_state(
+    y_pred, y_true, last_Xf, last_yf = _run_densegaal_with_state(
         args, cfg, clf, Xal, yal, Xv, yv, Xt, yt, Xv0, yv0, _sel
     )
     f1_macro = f1_score(y_true, y_pred, average='macro', zero_division=0)
-    dgsa_test_f1.append(float(f1_macro))
+    densegaal_test_f1.append(float(f1_macro))
     export_dataset_versions(
         args, cfg, results_dir, Xtr0, ytr0, Xv0_base, yv0_base, Xt0, yt0, Xal=Xal, yal=yal, Xaug=last_Xf, yaug=last_yf
     )
-    return y_pred, y_true, {"al_pool_f1": al_pool_f1, "al_test_f1": al_test_f1, "dgsa_test_f1": dgsa_test_f1}
+    return y_pred, y_true, {"al_pool_f1": al_pool_f1, "al_test_f1": al_test_f1, "densegaal_test_f1": densegaal_test_f1}
 
 
 def main():
@@ -1844,7 +1646,7 @@ def main():
     elif args.pooling_method and args.al_method == "base":
         y_pred, y_true, step_metrics = run_base_pooling(args, res)
     else:
-        y_pred, y_true, step_metrics = run_dgsa(args, res)
+        y_pred, y_true, step_metrics = run_densegaal(args, res)
     elapsed_sec = time.perf_counter() - start_time
     peak_gpu_mb = None
     if torch.cuda.is_available():
@@ -1856,8 +1658,8 @@ def main():
         if step_metrics:
             al_pool_f1 = step_metrics.get("al_pool_f1", [])
             al_test_f1 = step_metrics.get("al_test_f1", [])
-            dgsa_test_f1 = step_metrics.get("dgsa_test_f1", [])
-            if al_pool_f1 or al_test_f1 or dgsa_test_f1:
+            densegaal_test_f1 = step_metrics.get("densegaal_test_f1", [])
+            if al_pool_f1 or al_test_f1 or densegaal_test_f1:
                 f.write("\n\n[Step metrics]\n")
             if al_pool_f1:
                 f.write("al_pool_macro_f1:\n")
@@ -1867,11 +1669,11 @@ def main():
                 f.write("al_test_macro_f1:\n")
                 for i, v in enumerate(al_test_f1, 1):
                     f.write(f"  step_{i}: {v:.4f}\n")
-            if dgsa_test_f1:
-                f.write("dgsa_test_macro_f1:\n")
-                for i, v in enumerate(dgsa_test_f1, 1):
+            if densegaal_test_f1:
+                f.write("densegaal_test_macro_f1:\n")
+                for i, v in enumerate(densegaal_test_f1, 1):
                     f.write(f"  step_{i}: {v:.4f}\n")
-        neighbors_k = args.anchoral_K if getattr(args, 'dgsa_anchoral', False) else args.alfa_k
+        neighbors_k = args.anchoral_K if getattr(args, 'densegaal_anchoral', False) else args.alfa_k
         multipliers_str = ",".join([str(x) for x in _parse_num_synthetic_list(args.num_synthetic)])
         f.write(
             "\n\n[Run metadata]\n"
